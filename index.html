@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Yug & Dhara</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+    body{
+      margin:0;
+      font-family: Arial;
+      background:#0b1f3a;
+    }
+    header{
+      text-align:center;
+      padding:20px;
+      color:#f5c77a;
+    }
+    header img{
+      width:120px;
+      display:block;
+      margin:0 auto 10px;
+    }
+    nav{
+      background:white;
+      text-align:center;
+      padding:10px;
+    }
+    nav a{
+      margin:10px;
+      text-decoration:none;
+      color:#0b1f3a;
+      font-weight:bold;
+    }
+    section{
+      background:white;
+      margin:15px;
+      padding:15px;
+      border-radius:8px;
+    }
+    footer{
+      background:#f5c77a;
+      text-align:center;
+      padding:10px;
+      font-size:14px;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <img src="logo.png">
+  <h1>Yug & Dhara</h1>
+  <p>Women Health – Simple & Safe Tips</p>
+</header>
+
+<nav>
+  <a href="#home">Home</a>
+  <a href="#women">Women Health</a>
+  <a href="#blood">Blood Care</a>
+  <a href="#contact">Contact</a>
+</nav>
+
+<section id="home">
+  <h2>Welcome</h2>
+  <p>Yug & Dhara women health साठी सोप्या आणि सुरक्षित टिप्स देते.</p>
+</section>
+
+<section id="women">
+  <h2>Women Health Tips</h2>
+  <ul>
+    <li>वेळेवर झोप घ्या</li>
+    <li>पाणी जास्त प्या</li>
+    <li>ताणतणाव कमी ठेवा</li>
+  </ul>
+</section>
+
+<section id="blood">
+  <h2>Blood Care</h2>
+  <ul>
+    <li>हिरव्या पालेभाज्या खा</li>
+    <li>फळं रोज घ्या</li>
+    <li>थकवा दुर्लक्ष करू नका</li>
+  </ul>
+</section>
+
+<section id="contact">
+  <h2>Contact</h2>
+  <p>Email: <b>madhurithool19@gmail.com</b></p>
+</section>
+
+<footer>
+  <p>Disclaimer: ही माहिती फक्त सामान्य आरोग्य मार्गदर्शनासाठी आहे.</p>
+</footer>
+<-- chatbot -->
+<link href="https://cdn.jsdelivr.net/npm/@n8n/chat/dist/style.css" rel="stylesheet" />
+<script type="module">
+	import { createChat } from 'https://cdn.jsdelivr.net/npm/@n8n/chat/dist/chat.bundle.es.js';
+
+	createChat({
+		webhookUrl: 'YOUR_PRODUCTION_WEBHOOK_URL'
+	});
+</script>
+</body>
+</html>
