@@ -1,0 +1,151 @@
+name: Make Video (MoneyPrinterTurbo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Hindi video script (leave empty to use video-factory/script.txt)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "video-factory/script.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: make-video
+  cancel-in-progress: false
+
+jobs:
+  make-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout factory repo
+        uses: actions/checkout@v4
+
+      - name: Pick script
+        env:
+          INPUT_SCRIPT: ${{ inputs.script }}
+        run: |
+          if [ -n "$INPUT_SCRIPT" ]; then
+            printf '%s' "$INPUT_SCRIPT" > /tmp/script.txt
+          else
+            cp video-factory/script.txt /tmp/script.txt
+          fi
+          echo "----- SCRIPT -----"
+          cat /tmp/script.txt
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Clone MoneyPrinterTurbo
+        run: git clone --depth 1 https://github.com/harry0703/MoneyPrinterTurbo.git mpt
+
+      - name: Install MPT Python dependencies
+        run: |
+          cd mpt
+          pip install --upgrade pip uv
+          uv pip install --system --overrides requirements-security.txt -r requirements.txt
+
+      - name: Build local materials (gradient zoom clips)
+        run: |
+          mkdir -p materials
+          declare -a COLORS=("0x1a2a6c:0xb21f1f" "0x134e5e:0x71b280" "0x41295a:0x2f0743" "0x8360c3:0x2ebf91" "0x232526:0x414345" "0x5f2c82:0x49a09d")
+          for i in 0 1 2 3 4 5; do
+            IFS=':' read -r C1 C2 <<< "${COLORS[$i]}"
+            ffmpeg -y -f lavfi -i "gradients=s=1080x1920:c0=${C1}:c1=${C2}:c2=0xfdbb2d:c3=0x2196f3:speed=0.015:r=25" -t 1 -frames:v 1 "materials/img_${i}.png"
+            ffmpeg -y -i "materials/img_${i}.png" -vf "zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920:fps=25" -c:v libx264 -pix_fmt yuv420p -t 5 "materials/mat_${i}.mp4"
+          done
+          ls -lh materials/
+
+      - name: Run MPT with Edge TTS (Hindi)
+        id: mpt_edge
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cd mpt
+          cp config.example.toml config.toml
+          sed -i 's/^video_source = "pexels"/video_source = "local"/' config.toml
+          grep -n '^video_source' config.toml
+          grep -n '^subtitle_provider' config.toml
+          MATS="$GITHUB_WORKSPACE/materials/mat_0.mp4,$GITHUB_WORKSPACE/materials/mat_1.mp4,$GITHUB_WORKSPACE/materials/mat_2.mp4,$GITHUB_WORKSPACE/materials/mat_3.mp4,$GITHUB_WORKSPACE/materials/mat_4.mp4,$GITHUB_WORKSPACE/materials/mat_5.mp4"
+          python cli.py \
+            --video-script "$(cat /tmp/script.txt)" \
+            --video-source local \
+            --video-materials "$MATS" \
+            --video-aspect 9:16 \
+            --video-concat-mode sequential \
+            --voice-name "hi-IN-SwaraNeural-Female" \
+            --font-name "NotoSansDevanagari-Bold.ttf" \
+            --subtitle-enabled \
+            --bgm-type none \
+            2>&1 | tee "$GITHUB_WORKSPACE/mpt-edge.log"
+
+      - name: Fallback - Piper TTS + Whisper subtitles
+        if: steps.mpt_edge.outcome == 'failure'
+        run: |
+          set -o pipefail
+          echo "Edge TTS route failed, falling back to Piper (local-recipe route)."
+          pip install piper-tts
+          mkdir -p piper_voice
+          curl -L -o piper_voice/hi_IN-pratham-medium.onnx "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx"
+          curl -L -o piper_voice/hi_IN-pratham-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx.json"
+          python -m piper -m piper_voice/hi_IN-pratham-medium.onnx -f narration.wav < /tmp/script.txt
+          ls -lh narration.wav
+          cd mpt
+          sed -i 's/^subtitle_provider = "edge"/subtitle_provider = "whisper"/' config.toml
+          sed -i 's/^model_size = "large-v3"/model_size = "tiny"/' config.toml
+          grep -n '^subtitle_provider' config.toml
+          grep -n '^model_size' config.toml
+          MATS="$GITHUB_WORKSPACE/materials/mat_0.mp4,$GITHUB_WORKSPACE/materials/mat_1.mp4,$GITHUB_WORKSPACE/materials/mat_2.mp4,$GITHUB_WORKSPACE/materials/mat_3.mp4,$GITHUB_WORKSPACE/materials/mat_4.mp4,$GITHUB_WORKSPACE/materials/mat_5.mp4"
+          python cli.py \
+            --video-script "$(cat /tmp/script.txt)" \
+            --video-source local \
+            --video-materials "$MATS" \
+            --video-aspect 9:16 \
+            --video-concat-mode sequential \
+            --custom-audio-file "$GITHUB_WORKSPACE/narration.wav" \
+            --font-name "NotoSansDevanagari-Bold.ttf" \
+            --subtitle-enabled \
+            --bgm-type none \
+            2>&1 | tee "$GITHUB_WORKSPACE/mpt-piper.log"
+
+      - name: Collect and verify final video
+        run: |
+          FINAL=$(find mpt/storage/tasks -name "final-*.mp4" -type f | head -1)
+          echo "Found: $FINAL"
+          test -n "$FINAL"
+          mkdir -p output
+          cp "$FINAL" output/final.mp4
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_type,width,height -of default=noprint_wrappers=1 output/final.mp4
+          ls -lh output/
+
+      - name: Upload video artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video
+          path: output/final.mp4
+          retention-days: 7
+
+      - name: Publish video as GitHub Release (public download link)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="video-${{ github.run_id }}"
+          gh release create "$TAG" output/final.mp4 \
+            --title "Video $TAG" \
+            --notes "MoneyPrinterTurbo video generated by GitHub Actions (run ${{ github.run_id }})."
+          echo "Release tag: $TAG"
