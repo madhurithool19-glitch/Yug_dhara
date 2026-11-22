@@ -2,6 +2,12 @@ name: Talking Cartoon (SadTalker)
 
 on:
   workflow_dispatch:
+    inputs:
+      lines:
+        description: "Line numbers to render, space-separated (odd = Ramesh, even = Sunita)"
+        required: false
+        default: "1 2 3 4 5 6"
+        type: string
   push:
     branches: [main]
     paths:
@@ -31,6 +37,21 @@ jobs:
           done
           cp portrait.png ramesh.png
           ls -lh
+
+      - name: Resolve requested lines
+        run: |
+          LINES="${{ inputs.lines }}"
+          if [ -z "${LINES// }" ]; then LINES="1 2 3 4 5 6"; fi
+          CLEAN=""
+          for n in $LINES; do
+            case "$n" in
+              1|2|3|4|5|6) CLEAN="$CLEAN $n" ;;
+              *) echo "Ignoring invalid line number: $n" ;;
+            esac
+          done
+          if [ -z "${CLEAN// }" ]; then CLEAN=" 1 2 3 4 5 6"; fi
+          echo "LINES=${CLEAN# }" >> "$GITHUB_ENV"
+          echo "Requested lines:${CLEAN}"
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -81,9 +102,9 @@ jobs:
       - name: Install gfpgan (SadTalker imports it unconditionally)
         run: pip install gfpgan==1.3.8
 
-      - name: Prepare voices (16kHz mono WAV, all 6 lines)
+      - name: Prepare voices (16kHz mono WAV, requested lines)
         run: |
-          for n in 1 2 3 4 5 6; do
+          for n in $LINES; do
             ffmpeg -y -i "video-factory/talking/line${n}.wav" -ar 16000 -ac 1 "line${n}_16k.wav"
             echo "----- line${n}_16k.wav -----"
             ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 "line${n}_16k.wav"
@@ -95,14 +116,87 @@ jobs:
           SP=$(python -c "import site; print(site.getsitepackages()[0])")
           execstack -c "$SP/torch/lib/libtorch_cpu.so" || true
 
-      - name: Run SadTalker - all 6 dialogue lines
+      - name: Pre-check Sunita portrait (landmark detection test)
         run: |
-          # Speaker map: odd lines (1,3,5) = Ramesh (portrait.png), even lines (2,4,6) = Sunita (sunita.png)
-          declare -A IMG=( [1]=portrait.png [2]=sunita.png [3]=portrait.png [4]=sunita.png [5]=portrait.png [6]=sunita.png )
+          NEED=0
+          for n in $LINES; do
+            if [ $((n % 2)) -eq 0 ]; then NEED=1; fi
+          done
+          if [ "$NEED" -eq 0 ]; then
+            echo "No Sunita (even) lines requested - skipping portrait pre-check."
+            exit 0
+          fi
+          cat > "$GITHUB_WORKSPACE/sunita_precheck.py" <<'PYEOF'
+          import os
+          import sys
+
+          import cv2
+          import torch
+
+          WS = os.environ["GITHUB_WORKSPACE"]
+          ST_DIR = os.path.join(WS, "sadtalker")
+          sys.path.insert(0, ST_DIR)
+          os.chdir(ST_DIR)
+
+          # SadTalker ki apni landmark machinery: src/utils/croper.py ki Preprocesser
+          # class wahi hai jo inference.py ke CropAndExtract -> propress.crop() me
+          # 'can not detect the landmark from source image' fail karti hai.
+          # get_landmark() hi woh pehla gate hai - wahi yaha test hota hai.
+          from src.utils.croper import Preprocesser
+
+          TALKING = os.path.join(WS, "video-factory", "talking")
+          CANDIDATES = ["sunita_a.png", "sunita_b.png", "sunita_c.png", "sunita.png"]
+
+          device = "cuda" if torch.cuda.is_available() else "cpu"
+          pre = Preprocesser(device)
+
+          winner = None
+          for name in CANDIDATES:
+              path = os.path.join(TALKING, name)
+              if not os.path.isfile(path):
+                  print(f"SKIP {name}: file not found")
+                  continue
+              img = cv2.imread(path)
+              if img is None:
+                  print(f"FAIL {name}: image read nahi ho payi")
+                  continue
+              img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+              try:
+                  lm = pre.get_landmark(img_rgb)
+              except Exception as e:
+                  print(f"FAIL {name}: landmark error: {e}")
+                  continue
+              if lm is None:
+                  print(f"FAIL {name}: no face landmark detected")
+              else:
+                  print(f"PASS {name}: landmark detected ({len(lm)} points)")
+                  winner = name
+                  break
+
+          if winner is None:
+              print("ERROR: Koi bhi Sunita portrait landmark pre-check pass nahi kar paya. Render loop se pehle job yahi roka ja raha hai.")
+              sys.exit(1)
+
+          out = os.path.join(WS, "sunita_winner.txt")
+          with open(out, "w") as f:
+              f.write(winner)
+          print(f"Sunita portrait winner: {winner} (saved to sunita_winner.txt)")
+          PYEOF
+          python "$GITHUB_WORKSPACE/sunita_precheck.py"
+
+      - name: Run SadTalker - requested dialogue lines
+        run: |
+          # Speaker map: odd lines (1,3,5) = Ramesh (portrait.png), even lines (2,4,6) = Sunita (pre-check winner ya default sunita.png)
+          SUNITA_IMG="sunita.png"
+          if [ -f "$GITHUB_WORKSPACE/sunita_winner.txt" ]; then
+            SUNITA_IMG=$(cat "$GITHUB_WORKSPACE/sunita_winner.txt")
+          fi
+          echo "Sunita portrait in use: $SUNITA_IMG"
+          declare -A IMG=( [1]=portrait.png [2]=$SUNITA_IMG [3]=portrait.png [4]=$SUNITA_IMG [5]=portrait.png [6]=$SUNITA_IMG )
           mkdir -p "$GITHUB_WORKSPACE/output"
           : > "$GITHUB_WORKSPACE/failed_lines.txt"
           cd sadtalker
-          for n in 1 2 3 4 5 6; do
+          for n in $LINES; do
             echo "===== Line $n (portrait: ${IMG[$n]}) ====="
             if python inference.py \
               --driven_audio "$GITHUB_WORKSPACE/line${n}_16k.wav" \
@@ -129,7 +223,7 @@ jobs:
       - name: Collect and verify output videos
         run: |
           : > missing_lines.txt
-          for n in 1 2 3 4 5 6; do
+          for n in $LINES; do
             f="output/line${n}.mp4"
             if [ -s "$f" ]; then
               echo "----- $f -----"
@@ -160,7 +254,7 @@ jobs:
           if [ -e "${FILES[0]}" ]; then
             gh release create "$TAG" "${FILES[@]}" \
               --title "Talking Cartoon $TAG" \
-              --notes "SadTalker talking-cartoon lines generated by GitHub Actions (run ${{ github.run_id }}). Roti Ka Jaadu: line1/3/5 = Ramesh, line2/4/6 = Sunita."
+              --notes "SadTalker talking-cartoon lines generated by GitHub Actions (run ${{ github.run_id }}). Lines rendered: $LINES (odd = Ramesh, even = Sunita)."
             echo "Release tag: $TAG"
           else
             echo "No line videos produced - skipping Release."
@@ -173,4 +267,4 @@ jobs:
             echo "FAILED LINES: $(cat missing_lines.txt | tr '\n' ' ')"
             exit 1
           fi
-          echo "All 6 lines produced OK."
+          echo "All requested lines produced OK."
