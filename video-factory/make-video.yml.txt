@@ -66,14 +66,30 @@ jobs:
           pip install --upgrade pip uv
           uv pip install --system --overrides requirements-security.txt -r requirements.txt
 
-      - name: Build local materials (gradient zoom clips)
+      - name: Build local materials (real scene images)
         run: |
           mkdir -p materials
           declare -a COLORS=("0x1a2a6c:0xb21f1f" "0x134e5e:0x71b280" "0x41295a:0x2f0743" "0x8360c3:0x2ebf91" "0x232526:0x414345" "0x5f2c82:0x49a09d")
+          mapfile -t PROMPTS < video-factory/prompts.txt
           for i in 0 1 2 3 4 5; do
             IFS=':' read -r C1 C2 <<< "${COLORS[$i]}"
-            ffmpeg -y -f lavfi -i "gradients=s=1080x1920:c0=${C1}:c1=${C2}:c2=0xfdbb2d:c3=0x2196f3:speed=0.015:r=25" -t 1 -frames:v 1 "materials/img_${i}.png"
-            ffmpeg -y -i "materials/img_${i}.png" -vf "zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920:fps=25" -c:v libx264 -pix_fmt yuv420p -t 5 "materials/mat_${i}.mp4"
+            PROMPT="${PROMPTS[$i]:-indian village moral story scene, cinematic, photorealistic, vertical portrait}"
+            ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$PROMPT")
+            OK=0
+            for try in 1 2 3; do
+              if curl -sL --max-time 150 -o "materials/img_${i}.jpg" "https://image.pollinations.ai/prompt/${ENC}?width=1080&height=1920&seed=$((100+i))&nologo=true" && [ "$(stat -c%s "materials/img_${i}.jpg" 2>/dev/null || echo 0)" -gt 20000 ]; then OK=1; break; fi
+              echo "image $i attempt $try failed, waiting and retrying"
+              sleep 15
+            done
+            if [ "$OK" = "1" ]; then
+              echo "image $i downloaded OK"
+              ffmpeg -y -i "materials/img_${i}.jpg" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920:fps=25" -c:v libx264 -pix_fmt yuv420p -t 5 "materials/mat_${i}.mp4"
+            else
+              echo "image $i unavailable, using gradient fallback for this scene only"
+              ffmpeg -y -f lavfi -i "gradients=s=1080x1920:c0=${C1}:c1=${C2}:c2=0xfdbb2d:c3=0x2196f3:speed=0.015:r=25" -t 1 -frames:v 1 "materials/img_${i}.png"
+              ffmpeg -y -i "materials/img_${i}.png" -vf "zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920:fps=25" -c:v libx264 -pix_fmt yuv420p -t 5 "materials/mat_${i}.mp4"
+            fi
+            sleep 10
           done
           ls -lh materials/
 
