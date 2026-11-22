@@ -1,0 +1,42 @@
+name: Test Image (SD-Turbo)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU image stack
+        run: |
+          pip install uv
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system diffusers transformers accelerate safetensors
+
+      - name: Generate one test image (SD-Turbo on CPU)
+        run: python video-factory/gen_image_test.py
+
+      - name: Upload test image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-image
+          path: test_image.png
+
+      - name: Publish test image as release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: imgtest-${{ github.run_id }}
+          name: SD-Turbo test image ${{ github.run_id }}
+          files: test_image.png
