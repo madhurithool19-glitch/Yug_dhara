@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   sadtalker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
       - name: Checkout factory repo
@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: sadtalker/checkpoints
-          key: sadtalker-checkpoints-v0.0.2-256
+          key: sadtalker-checkpoints-v0.0.2-256-v2
 
       - name: Download SadTalker checkpoints (256 model, no GFPGAN enhancer)
         run: |
@@ -57,6 +57,12 @@ jobs:
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00109-model.pth.tar
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00229-model.pth.tar
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/SadTalker_V0.0.2_256.safetensors
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2exp_00300-model.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2pose_00140-model.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/epoch_20.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/facevid2vid_00189-model.pth.tar
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/shape_predictor_68_face_landmarks.dat
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/wav2lip.pth
           ls -lh
 
       - name: Install Python dependencies (CPU-only torch)
@@ -74,6 +80,12 @@ jobs:
         run: |
           ffmpeg -y -i video-factory/talking/voice.wav -ar 16000 -ac 1 voice16k.wav
           ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 voice16k.wav
+
+      - name: Fix libtorch execstack (torch 1.12 on new kernels)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq execstack
+          SP=$(python -c "import site; print(site.getsitepackages()[0])")
+          execstack -c "$SP/torch/lib/libtorch_cpu.so" || true
 
       - name: Run SadTalker - main portrait
         run: |
