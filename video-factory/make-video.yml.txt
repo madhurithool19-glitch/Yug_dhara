@@ -54,6 +54,12 @@ jobs:
       - name: Clone MoneyPrinterTurbo
         run: git clone --depth 1 https://github.com/harry0703/MoneyPrinterTurbo.git mpt
 
+      - name: Add Devanagari font for subtitles
+        run: |
+          sudo apt-get install -y fonts-noto-core
+          cp /usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf mpt/resource/fonts/
+          ls -lh mpt/resource/fonts/ | grep -i devanagari
+
       - name: Install MPT Python dependencies
         run: |
           cd mpt
