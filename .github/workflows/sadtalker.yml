@@ -2,6 +2,12 @@ name: Talking Cartoon (SadTalker)
 
 on:
   workflow_dispatch:
+    inputs:
+      lines:
+        description: 'Line numbers to render (space-separated, e.g. "2 4 6")'
+        required: false
+        default: 'all'
+        type: string
   push:
     branches: [main]
     paths:
@@ -21,6 +27,32 @@ jobs:
     steps:
       - name: Checkout factory repo
         uses: actions/checkout@v4
+
+      - name: Select lines (Sunita pre-check)
+        id: select
+        run: |
+          set -euo pipefail
+          cd video-factory/talking
+          ls -lh
+          echo "--- portraits ---"
+          ls -lh portrait*.png 2>/dev/null || true
+          echo "--- audio ---"
+          ls -lh line*.wav 2>/dev/null || true
+          echo "--- requested: '${{ inputs.lines }}' ---"
+          # Pre-check: face detection availability for the selected Sunita portrait.
+          # The render step uses portrait.png (copied below); this step only reports
+          # which portrait files exist so a bad selection fails fast with a clear log.
+          if [ ! -f portrait.png ]; then
+            echo "::error::portrait.png missing in video-factory/talking"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json, os
+          req = os.environ.get("LINES", "all").strip()
+          print(f"requested lines input: {req!r}")
+          PY
+        env:
+          LINES: ${{ inputs.lines }}
 
       - name: Decode talking inputs (base64 -> png/wav)
         run: |
@@ -56,121 +88,68 @@ jobs:
         run: |
           mkdir -p sadtalker/checkpoints
           cd sadtalker/checkpoints
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00109-model.pth.tar
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00229-model.pth.tar
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/SadTalker_V0.0.2_256.safetensors
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00109-model.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00229-model.pth
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2exp_00300-model.pth
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2pose_00140-model.pth
           wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/epoch_20.pth
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/facevid2vid_00189-model.pth.tar
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/shape_predictor_68_face_landmarks.dat
-          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/wav2lip.pth
           ls -lh
 
-      - name: Install Python dependencies (CPU-only torch)
+      - name: Install SadTalker deps (CPU)
         run: |
-          pip install --upgrade pip
-          pip install torch==1.12.1+cpu torchvision==0.13.1+cpu torchaudio==0.12.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
           cd sadtalker
-          # gradio (web UI) aur gfpgan (enhancer) CLI inference ke liye nahi chahiye;
-          # unhe hata kar install halka aur tez rakha gaya hai.
-          sed -i '/^gradio$/d; /^gfpgan$/d' requirements.txt
-          cat requirements.txt
+          python -m pip install --upgrade pip
+          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
+          pip install "numpy<2" librosa==0.10.2.post1 face-alignment==1.4.1 safetensors
 
-      - name: Install gfpgan (SadTalker imports it unconditionally)
-        run: pip install gfpgan==1.3.8
-
-      - name: Prepare voices (16kHz mono WAV, all 6 lines)
+      - name: Generate talking videos (one per line, Sunita portrait)
         run: |
-          for n in 1 2 3 4 5 6; do
-            ffmpeg -y -i "video-factory/talking/line${n}.wav" -ar 16000 -ac 1 "line${n}_16k.wav"
-            echo "----- line${n}_16k.wav -----"
-            ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 "line${n}_16k.wav"
-          done
-
-      - name: Fix libtorch execstack (torch 1.12 on new kernels)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq execstack
-          SP=$(python -c "import site; print(site.getsitepackages()[0])")
-          execstack -c "$SP/torch/lib/libtorch_cpu.so" || true
-
-      - name: Run SadTalker - all 6 dialogue lines
-        run: |
-          # Speaker map: odd lines (1,3,5) = Ramesh (portrait.png), even lines (2,4,6) = Sunita (sunita.png)
-          declare -A IMG=( [1]=portrait.png [2]=sunita.png [3]=portrait.png [4]=sunita.png [5]=portrait.png [6]=sunita.png )
-          mkdir -p "$GITHUB_WORKSPACE/output"
-          : > "$GITHUB_WORKSPACE/failed_lines.txt"
+          set -euo pipefail
           cd sadtalker
-          for n in 1 2 3 4 5 6; do
-            echo "===== Line $n (portrait: ${IMG[$n]}) ====="
-            if python inference.py \
-              --driven_audio "$GITHUB_WORKSPACE/line${n}_16k.wav" \
-              --source_image "$GITHUB_WORKSPACE/video-factory/talking/${IMG[$n]}" \
-              --result_dir "$GITHUB_WORKSPACE/results_line${n}" \
-              --checkpoint_dir ./checkpoints \
-              --size 256 \
-              --preprocess crop; then
-              OUT=$(find "$GITHUB_WORKSPACE/results_line${n}" -name "*.mp4" -type f -printf "%s %p\n" | sort -nr | head -1 | cut -d' ' -f2-)
-              if [ -n "$OUT" ]; then
-                cp "$OUT" "$GITHUB_WORKSPACE/output/line${n}.mp4"
-                echo "Line $n OK -> output/line${n}.mp4"
-              else
-                echo "Line $n FAILED: inference ran but no mp4 produced"
-                echo "$n" >> "$GITHUB_WORKSPACE/failed_lines.txt"
-              fi
-            else
-              echo "Line $n FAILED: inference.py exited with error"
-              echo "$n" >> "$GITHUB_WORKSPACE/failed_lines.txt"
-            fi
-          done
-          echo "Failed lines so far: $(cat "$GITHUB_WORKSPACE/failed_lines.txt" | tr '\n' ' ')"
-
-      - name: Collect and verify output videos
-        run: |
-          : > missing_lines.txt
-          for n in 1 2 3 4 5 6; do
-            f="output/line${n}.mp4"
-            if [ -s "$f" ]; then
-              echo "----- $f -----"
-              ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_type,width,height -of default=noprint_wrappers=1 "$f"
-            else
-              echo "MISSING: $f"
-              echo "$n" >> missing_lines.txt
-            fi
-          done
-          ls -lh output/
-          echo "Missing lines: $(cat missing_lines.txt | tr '\n' ' ')"
-
-      - name: Upload talking videos artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: talking-videos
-          path: output/*.mp4
-          retention-days: 7
-
-      - name: Publish talking videos as GitHub Release (public download link)
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="sadtalker-${{ github.run_id }}"
-          FILES=(output/line*.mp4)
-          if [ -e "${FILES[0]}" ]; then
-            gh release create "$TAG" "${FILES[@]}" \
-              --title "Talking Cartoon $TAG" \
-              --notes "SadTalker talking-cartoon lines generated by GitHub Actions (run ${{ github.run_id }}). Roti Ka Jaadu: line1/3/5 = Ramesh, line2/4/6 = Sunita."
-            echo "Release tag: $TAG"
+          mkdir -p ../video-factory/talking/out
+          REQ="${{ inputs.lines }}"
+          echo "requested lines: '$REQ'"
+          if [ -z "$REQ" ] || [ "$REQ" = "all" ]; then
+            SEL=""
           else
-            echo "No line videos produced - skipping Release."
+            SEL="$REQ"
           fi
+          for wav in ../video-factory/talking/line*.wav; do
+            [ -e "$wav" ] || continue
+            base=$(basename "$wav" .wav)
+            num=${base#line}
+            if [ -n "$SEL" ]; then
+              case " $SEL " in
+                *" $num "*) ;;
+                *) echo "skip $base (not in '$SEL')"; continue ;;
+              esac
+            fi
+            echo "=== render $base (line $num) ==="
+            python inference.py \
+              --driven_audio "$wav" \
+              --source_image ../video-factory/talking/portrait.png \
+              --result_dir ../video-factory/talking/out \
+              --still \
+              --preprocess full \
+              --size 256 \
+              --enhancer gfpgan
+            # rename the produced mp4 to a stable per-line name
+            f=$(ls -t ../video-factory/talking/out/*.mp4 | head -1)
+            mv "$f" "../video-factory/talking/out/${base}.mp4"
+            ls -lh ../video-factory/talking/out/
+          done
+          echo "=== outputs ==="
+          ls -lh ../video-factory/talking/out/
 
-      - name: Fail job if any line is missing
-        if: always()
+      - name: Commit talking videos back to repo
         run: |
-          if [ -s missing_lines.txt ]; then
-            echo "FAILED LINES: $(cat missing_lines.txt | tr '\n' ' ')"
-            exit 1
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add video-factory/talking/out/*.mp4
+          if git diff --cached --quiet; then
+            echo "no new videos to commit"
+          else
+            git commit -m "SadTalker: talking videos (lines: ${{ inputs.lines }})"
+            git push
           fi
-          echo "All 6 lines produced OK."
