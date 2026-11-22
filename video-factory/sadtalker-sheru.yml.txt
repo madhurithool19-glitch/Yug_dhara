@@ -1,0 +1,140 @@
+name: Sheru Bhai (SadTalker)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sadtalker-sheru
+  cancel-in-progress: false
+
+jobs:
+  sheru:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout factory repo
+        uses: actions/checkout@v4
+
+      - name: Decode sheru inputs (base64 -> png/wav)
+        run: |
+          cd video-factory/bhoot-adda
+          for f in *.b64; do
+            base64 -d "$f" > "${f%.b64}"
+            echo "decoded: $f -> ${f%.b64}"
+          done
+          ls -lh
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Clone SadTalker
+        run: git clone --depth 1 https://github.com/OpenTalker/SadTalker.git sadtalker
+
+      - name: Restore SadTalker checkpoints cache
+        uses: actions/cache@v4
+        with:
+          path: sadtalker/checkpoints
+          key: sadtalker-checkpoints-v0.0.2-256-v2
+
+      - name: Download SadTalker checkpoints (256 model, no GFPGAN enhancer)
+        run: |
+          mkdir -p sadtalker/checkpoints
+          cd sadtalker/checkpoints
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00109-model.pth.tar
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00229-model.pth.tar
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/SadTalker_V0.0.2_256.safetensors
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2exp_00300-model.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/auido2pose_00140-model.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/epoch_20.pth
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/facevid2vid_00189-model.pth.tar
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/shape_predictor_68_face_landmarks.dat
+          wget -nc https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2/wav2lip.pth
+          ls -lh
+
+      - name: Install Python dependencies (CPU-only torch)
+        run: |
+          pip install --upgrade pip
+          pip install torch==1.12.1+cpu torchvision==0.13.1+cpu torchaudio==0.12.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+          cd sadtalker
+          sed -i '/^gradio$/d; /^gfpgan$/d' requirements.txt
+          cat requirements.txt
+          pip install -r requirements.txt
+
+      - name: Install gfpgan (SadTalker imports it unconditionally)
+        run: pip install gfpgan==1.3.8
+
+      - name: Fix libtorch execstack (torch 1.12 on new kernels)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq execstack
+          SP=$(python -c "import site; print(site.getsitepackages()[0])")
+          execstack -c "$SP/torch/lib/libtorch_cpu.so" || true
+
+      - name: Landmark pre-check on Sheru portrait (fail fast)
+        run: |
+          cd sadtalker
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, '.')
+          from src.face3d.util.preprocess import Preprocesser
+          import torch
+          device = 'cpu'
+          pre = Preprocesser(device)
+          img_path = '../video-factory/bhoot-adda/sheru.png'
+          try:
+              lm = pre.get_landmark(img_path)
+          except Exception as e:
+              print('LANDMARK CHECK FAILED with exception:', e)
+              sys.exit(1)
+          if lm is None:
+              print('LANDMARK CHECK FAILED: no landmark detected in sheru.png')
+              sys.exit(1)
+          print('LANDMARK CHECK PASSED for sheru.png')
+          PY
+
+      - name: Run SadTalker - Sheru lines 1 to 4
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cd sadtalker
+          for n in 1 2 3 4; do
+            echo "=== Sheru line $n ==="
+            ffmpeg -y -i "$GITHUB_WORKSPACE/video-factory/bhoot-adda/line$n.wav" -ar 16000 -ac 1 "$GITHUB_WORKSPACE/line${n}_16k.wav"
+            rm -rf "$GITHUB_WORKSPACE/results_sheru_$n"
+            python inference.py \
+              --driven_audio "$GITHUB_WORKSPACE/line${n}_16k.wav" \
+              --source_image "$GITHUB_WORKSPACE/video-factory/bhoot-adda/sheru.png" \
+              --result_dir "$GITHUB_WORKSPACE/results_sheru_$n" \
+              --checkpoint_dir ./checkpoints \
+              --size 256 \
+              --preprocess crop
+            OUT=$(find "$GITHUB_WORKSPACE/results_sheru_$n" -name "*.mp4" -type f -printf "%s %p\n" | sort -nr | head -1 | cut -d' ' -f2-)
+            if [ -z "$OUT" ]; then
+              echo "ERROR: line $n produced no mp4"
+              exit 1
+            fi
+            cp "$OUT" "$GITHUB_WORKSPACE/output/sheru_line$n.mp4"
+            ls -lh "$GITHUB_WORKSPACE/output/"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sheru-lines
+          path: output/*.mp4
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sheru-${{ github.run_id }}
+          name: Sheru Bhai SadTalker ${{ github.run_id }}
+          files: output/*.mp4
