@@ -8,6 +8,11 @@ on:
         required: false
         default: ""
         type: string
+      prompts:
+        description: "Optional: scene prompt lines, one per scene, each starting with turbo: or poll: (leave empty to use video-factory/prompts.txt)"
+        required: false
+        default: ""
+        type: string
   push:
     branches: [main]
     paths:
@@ -39,6 +44,17 @@ jobs:
           fi
           echo "----- SCRIPT -----"
           cat /tmp/script.txt
+
+      - name: Use supplied prompts if given
+        env:
+          INPUT_PROMPTS: ${{ inputs.prompts }}
+        run: |
+          if [ -n "$INPUT_PROMPTS" ]; then
+            printf '%s\n' "$INPUT_PROMPTS" > video-factory/prompts.txt
+            echo "using supplied prompts"
+          fi
+          echo "----- PROMPTS -----"
+          cat video-factory/prompts.txt
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
