@@ -82,25 +82,41 @@ jobs:
 
       - name: Landmark pre-check on Sheru portrait (fail fast)
         run: |
-          cd sadtalker
-          python - <<'PY'
+          cat > "$GITHUB_WORKSPACE/sheru_precheck.py" <<'PYEOF'
+          import os
           import sys
-          sys.path.insert(0, '.')
-          from src.face3d.util.preprocess import Preprocesser
+
+          import cv2
           import torch
-          device = 'cpu'
+
+          WS = os.environ["GITHUB_WORKSPACE"]
+          ST_DIR = os.path.join(WS, "sadtalker")
+          sys.path.insert(0, ST_DIR)
+          os.chdir(ST_DIR)
+
+          # SadTalker ki apni landmark machinery (proven pattern from sadtalker.yml)
+          from src.utils.croper import Preprocesser
+
+          device = "cuda" if torch.cuda.is_available() else "cpu"
           pre = Preprocesser(device)
-          img_path = '../video-factory/bhoot-adda/sheru.png'
+
+          path = os.path.join(WS, "video-factory", "bhoot-adda", "sheru.png")
+          img = cv2.imread(path)
+          if img is None:
+              print("LANDMARK CHECK FAILED: sheru.png read nahi ho payi")
+              sys.exit(1)
+          img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
           try:
-              lm = pre.get_landmark(img_path)
+              lm = pre.get_landmark(img_rgb)
           except Exception as e:
-              print('LANDMARK CHECK FAILED with exception:', e)
+              print("LANDMARK CHECK FAILED with exception:", e)
               sys.exit(1)
           if lm is None:
-              print('LANDMARK CHECK FAILED: no landmark detected in sheru.png')
+              print("LANDMARK CHECK FAILED: no landmark detected in sheru.png")
               sys.exit(1)
-          print('LANDMARK CHECK PASSED for sheru.png')
-          PY
+          print("LANDMARK CHECK PASSED for sheru.png")
+          PYEOF
+          python "$GITHUB_WORKSPACE/sheru_precheck.py"
 
       - name: Run SadTalker - Sheru lines 1 to 4
         run: |
